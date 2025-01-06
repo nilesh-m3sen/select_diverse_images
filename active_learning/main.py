@@ -6,17 +6,20 @@ import torchvision.models as models
 import torchvision.transforms as transforms
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
-from PIL import Image
+import cv2
 from tqdm import tqdm
-from scipy.spatial.distance import cdist
-from joblib import Parallel, delayed
+from multiprocessing import Pool
+from torch.cuda.amp import autocast
 import time
 
 # Define a custom dataset to read images from a directory
 class ImageDataset(Dataset):
     def __init__(self, directory, transform=None):
         self.directory = directory
-        self.image_paths = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith(('.png', '.jpg', '.jpeg'))]
+        self.image_paths = [
+            os.path.join(directory, f) for f in os.listdir(directory) 
+            if f.endswith(('.png', '.jpg', '.jpeg'))
+        ]
         self.transform = transform
 
     def __len__(self):
@@ -24,7 +27,8 @@ class ImageDataset(Dataset):
 
     def __getitem__(self, idx):
         image_path = self.image_paths[idx]
-        image = Image.open(image_path).convert('RGB')  # Ensure image is RGB
+        image = cv2.imread(image_path)  # Load image with OpenCV
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB
         if self.transform:
             image = self.transform(image)
         return image, image_path
@@ -39,82 +43,61 @@ class FeatureExtractor(nn.Module):
         with torch.no_grad():
             features = self.feature_extractor(x)
             return features.squeeze()
-        
-# Distance and Similarity Metrics
-def euclidean_distance(x, y):
-    return np.linalg.norm(x - y)
 
-def gaussian_similarity(distance, lambda_param):
-    return np.exp(-distance**2 / lambda_param)
-
-def linear_similarity(distance, lambda_param):
-    return max(0, 1 - distance / lambda_param)
-
-
-def compute_gains_parallel(i, features, selected_indices, uncertainties, pairwise_distances, lambda_param):
-    """
-    Compute the gain for a single feature index in parallel.
-    """
-    gain = uncertainties[i]
-    if selected_indices:
-        sims = np.exp(-pairwise_distances[i, selected_indices] ** 2 / lambda_param)  # Gaussian similarity
-        gain -= sims.dot(uncertainties[selected_indices])
-    return gain, i
-
-
-def noris_sum_resnet_chunked(unlabeled_loader, feature_extractor, batch_size, distance_metric, similarity_func, lambda_param, chunk_size):
-    """
-    Implements NORIS-Sum with chunked feature loading and parallel processing.
-    """
-    # Step 1: Extract features in chunks
+# Efficient NORIS-Sum implementation
+def noris_sum_resnet_torch(unlabeled_loader, feature_extractor, batch_size, lambda_param):
+    # Step 1: Extract features
     features, image_paths = [], []
     for images, paths in tqdm(unlabeled_loader, desc="Extracting features"):
         images = images.to(device)
-        feats = feature_extractor(images).cpu().numpy()
+        with autocast():  # Mixed precision for faster processing
+            feats = feature_extractor(images).detach().cpu().numpy()
         features.extend(feats)
         image_paths.extend(paths)
 
     features = np.array(features)
-    pairwise_distances = cdist(features, features, metric='euclidean')
+    print(f"Extracted features for {len(features)} images.")
+
+    # Step 2: Compute pairwise distances using torch.cdist
+    features_tensor = torch.tensor(features).to(device)
+    pairwise_distances = torch.cdist(features_tensor, features_tensor).cpu().numpy()
+
     uncertainties = np.ones(len(features))  # Dummy uncertainties, replace with actual logic
     selected_indices = []
 
-    # Step 2: NORIS-Sum with parallel gain computation
     for _ in tqdm(range(batch_size), desc="Selecting images"):
-        # Compute gains in parallel
-        results = Parallel(n_jobs=-1)(
-            delayed(compute_gains_parallel)(
-                i, features, selected_indices, uncertainties, pairwise_distances, lambda_param
-            )
-            for i in range(len(features))
-            if i not in selected_indices
-        )
-        gains, indices = zip(*results)
-        best_idx = indices[np.argmax(gains)]
+        # Compute gains
+        gains = uncertainties.copy()
+        if selected_indices:
+            sims = np.exp(-pairwise_distances[:, selected_indices] ** 2 / lambda_param)
+            gains -= sims.dot(uncertainties[selected_indices])
+
+        best_idx = np.argmax(gains)
         selected_indices.append(best_idx)
 
-        # Update uncertainties
-        for i in range(len(features)):
-            if i not in selected_indices:
-                dist = pairwise_distances[i, best_idx]
-                sim = np.exp(-dist ** 2 / lambda_param)
-                uncertainties[i] -= sim * uncertainties[best_idx]
+        # Update uncertainties vectorized
+        dist = pairwise_distances[:, best_idx]
+        sim = np.exp(-dist ** 2 / lambda_param)
+        uncertainties -= sim * uncertainties[best_idx]
 
     selected_image_paths = [image_paths[idx] for idx in selected_indices]
     return selected_image_paths
 
+# Parallelized image copying
+def copy_image(args):
+    src, dest = args
+    shutil.copy(src, dest)
 
-# Main function remains unchanged with the following modifications
+# Main function
 if __name__ == "__main__":
     # Configurations
     start_time = time.time()
-    source_dir = "images"
+    source_dir = "D:/Nilesh/labeling_work_24_12_23/yolodata/SW/20241219/original_data/SW_20241219/jpg"
     output_dir = "selected_images"
     os.makedirs(output_dir, exist_ok=True)
 
-    batch_size = 500
+    batch_size = 10000
     lambda_param = 1.0
-    chunk_size = 10000  # Process features in chunks
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('Device:', device)
@@ -124,27 +107,23 @@ if __name__ == "__main__":
     feature_extractor.eval()
 
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
+        transforms.ToTensor(),  # OpenCV handles resizing, normalize here
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
     dataset = ImageDataset(source_dir, transform=transform)
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True)
 
-    selected_images = noris_sum_resnet_chunked(
+    selected_images = noris_sum_resnet_torch(
         unlabeled_loader=dataloader,
         feature_extractor=feature_extractor,
         batch_size=batch_size,
-        distance_metric=euclidean_distance,
-        similarity_func=gaussian_similarity,
-        lambda_param=lambda_param,
-        chunk_size=chunk_size
+        lambda_param=lambda_param
     )
 
-    for image_path in tqdm(selected_images, desc="Moving selected images", total=len(selected_images)):
-        shutil.move(image_path, os.path.join(output_dir, os.path.basename(image_path)))
-        print(f"Moved: {image_path} -> {output_dir}")
+    # Copy selected images in parallel
+    with Pool(processes=8) as pool:
+        pool.map(copy_image, [(src, os.path.join(output_dir, os.path.basename(src))) for src in selected_images])
 
     end_time = time.time()
     duration = end_time - start_time
