@@ -2,6 +2,7 @@ import os
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score, davies_bouldin_score, pairwise_distances
 import torch
 from torch.utils.data import DataLoader
 from torchvision import models, transforms
@@ -12,6 +13,7 @@ import asyncio
 import time
 from torch.cuda.amp import autocast  # For mixed precision
 import shutil
+from collections import defaultdict
 
 # Feature extraction dataset class
 class ImageDataset(torch.utils.data.Dataset):
@@ -28,6 +30,43 @@ class ImageDataset(torch.utils.data.Dataset):
         if self.transform:
             image = self.transform(image)
         return image, image_path
+
+
+# Function to calculate clustering metrics
+def evaluate_clustering(features_reduced, cluster_labels):
+    metrics = {}
+
+    # Silhouette Score
+    metrics['silhouette_score'] = silhouette_score(features_reduced, cluster_labels)
+
+    # Davies-Bouldin Index
+    metrics['davies_bouldin_index'] = davies_bouldin_score(features_reduced, cluster_labels)
+
+    # Cluster counts
+    unique, counts = np.unique(cluster_labels, return_counts=True)
+    metrics['clusters_count'] = dict(zip(unique, counts))
+
+    return metrics
+
+
+# Function to calculate diversity within a cluster
+def calculate_diversity(features, cluster_labels):
+    diversity_scores = {}
+    clusters = defaultdict(list)
+
+    # Group features by cluster labels
+    for idx, label in enumerate(cluster_labels):
+        clusters[label].append(features[idx])
+
+    # Calculate diversity (average pairwise distance) for each cluster
+    for label, cluster_features in clusters.items():
+        if len(cluster_features) > 1:
+            distances = pairwise_distances(cluster_features)
+            diversity_scores[label] = np.mean(distances)
+        else:
+            diversity_scores[label] = 0  # No diversity in single-item clusters
+
+    return diversity_scores
 
 
 def main():
@@ -47,7 +86,7 @@ def main():
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    image_dir = f"D:/Nilesh/labeling_work_25_01_02/rgb_d_pose_false_classification_using_ver1/0/0_predict"
+    image_dir = f"D:/Nilesh/diverse_image_sampling/images"
     
     image_paths = [os.path.join(image_dir, img) for img in os.listdir(image_dir)]
     dataset = ImageDataset(image_paths, transform=transform)
@@ -78,10 +117,18 @@ def main():
     features_reduced = pca.fit_transform(features)
 
     # 3. Clustering
-    n_clusters = 500
-    print("Clusterin Features...")
+    n_clusters = 50
+    print("Clustering Features...")
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     cluster_labels = kmeans.fit_predict(features_reduced)
+
+    # Clustering evaluation
+    clustering_metrics = evaluate_clustering(features_reduced, cluster_labels)
+    print("Clustering Metrics:", clustering_metrics)
+
+    # Diversity scores
+    diversity_scores = calculate_diversity(features, cluster_labels)
+    print("Diversity Scores (sample):", dict(list(diversity_scores.items())[:5]))  # Display a sample
 
     # 4. Sampling with Limit on Similar Images
     max_per_cluster = 10  # Maximum similar images allowed per cluster
@@ -96,7 +143,7 @@ def main():
     print('Selected image paths', len(selected_image_paths))
 
     # 5. Async Saving of Selected Images
-    output_dir = f"D:/Nilesh/labeling_work_25_01_02/rgb_d_pose_false_classification_using_ver1/0/0_image"
+    output_dir = f"D:/Nilesh/diverse_image_sampling/selected_images"
     
     os.makedirs(output_dir, exist_ok=True)
 
@@ -104,7 +151,6 @@ def main():
         filename = os.path.basename(path)
         output_path = os.path.join(output_dir, filename)
         shutil.copy(path, output_path)
-
 
     async def save_all_images_async(image_paths):
         tasks = [save_image_async(path) for path in image_paths]

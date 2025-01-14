@@ -11,13 +11,22 @@ from tqdm import tqdm
 from multiprocessing import Pool
 from torch.cuda.amp import autocast
 import time
+import os
+from sklearn.metrics.pairwise import pairwise_distances
+
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+
+# Set GPU memory usage limit to 90%
+torch.cuda.set_per_process_memory_fraction(0.9, device=torch.device("cuda:0"))
 
 # Define a custom dataset to read images from a directory
 class ImageDataset(Dataset):
     def __init__(self, directory, transform=None):
         self.directory = directory
         self.image_paths = [
-            os.path.join(directory, f) for f in os.listdir(directory) 
+            os.path.join(directory, f) for f in os.listdir(directory)
             if f.endswith(('.png', '.jpg', '.jpeg'))
         ]
         self.transform = transform
@@ -44,40 +53,58 @@ class FeatureExtractor(nn.Module):
             features = self.feature_extractor(x)
             return features.squeeze()
 
-# Efficient NORIS-Sum implementation
-def noris_sum_resnet_torch(unlabeled_loader, feature_extractor, batch_size, lambda_param):
+
+
+def noris_sum_batched(unlabeled_loader, feature_extractor, total_images, lambda_param, batch_size=16, device="cuda"):
     # Step 1: Extract features
     features, image_paths = [], []
     for images, paths in tqdm(unlabeled_loader, desc="Extracting features"):
         images = images.to(device)
         with autocast():  # Mixed precision for faster processing
-            feats = feature_extractor(images).detach().cpu().numpy()
-        features.extend(feats)
+            feats = feature_extractor(images).detach()
+        features.append(feats.float())  # Ensure features are in float32
         image_paths.extend(paths)
 
-    features = np.array(features)
-    print(f"Extracted features for {len(features)} images.")
+    features = torch.cat(features, dim=0)  # Combine all features into a single tensor
+    print(f"Extracted features for {features.size(0)} images.")
 
-    # Step 2: Compute pairwise distances using torch.cdist
-    features_tensor = torch.tensor(features).to(device)
-    pairwise_distances = torch.cdist(features_tensor, features_tensor).cpu().numpy()
+    num_features = features.size(0)
 
-    uncertainties = np.ones(len(features))  # Dummy uncertainties, replace with actual logic
+    # Step 2: Precompute pairwise distances in batches
+    distances = torch.zeros((num_features, num_features), dtype=torch.float32, device=device)
+    print("Computing pairwise distances in batches...")
+    
+    for i in tqdm(range(0, num_features, batch_size), desc="Batched distance computation"):
+        end_i = min(i + batch_size, num_features)
+        batch_features = features[i:end_i]  # Select batch
+        for j in range(0, num_features, batch_size):
+            end_j = min(j + batch_size, num_features)
+            # Cast batch_features to float32 for cdist
+            batch_distances = torch.cdist(batch_features.float(), features[j:end_j].float(), p=2)
+            distances[i:end_i, j:end_j] = batch_distances  # Fill the corresponding block
+    
+    print("Pairwise distances computed.")
+
+    # Step 3: Uncertainty Sampling
+    uncertainties = torch.ones(num_features, dtype=torch.float32, device=device)  # Initialize uncertainties
     selected_indices = []
 
-    for _ in tqdm(range(batch_size), desc="Selecting images"):
-        # Compute gains
-        gains = uncertainties.copy()
+    for _ in tqdm(range(total_images), desc="Selecting images"):
         if selected_indices:
-            sims = np.exp(-pairwise_distances[:, selected_indices] ** 2 / lambda_param)
-            gains -= sims.dot(uncertainties[selected_indices])
+            # Compute similarity to already selected images
+            sims = torch.zeros(num_features, dtype=torch.float32, device=device)
+            for idx in selected_indices:
+                sims += torch.exp(-distances[idx] ** 2 / lambda_param)
+            gains = uncertainties - sims
+        else:
+            gains = uncertainties.clone()
 
-        best_idx = np.argmax(gains)
+        # Select the image with the highest gain
+        best_idx = torch.argmax(gains).item()
         selected_indices.append(best_idx)
 
-        # Update uncertainties vectorized
-        dist = pairwise_distances[:, best_idx]
-        sim = np.exp(-dist ** 2 / lambda_param)
+        # Update uncertainties
+        sim = torch.exp(-distances[best_idx] ** 2 / lambda_param)
         uncertainties -= sim * uncertainties[best_idx]
 
     selected_image_paths = [image_paths[idx] for idx in selected_indices]
@@ -96,8 +123,9 @@ if __name__ == "__main__":
     output_dir = "selected_images"
     os.makedirs(output_dir, exist_ok=True)
 
-    batch_size = 10000
+    total_images = 10000  # Total images to select
     lambda_param = 1.0
+    batch_size = 8  # Smaller batch size for the dataloader
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('Device:', device)
@@ -107,17 +135,17 @@ if __name__ == "__main__":
     feature_extractor.eval()
 
     transform = transforms.Compose([
-        transforms.ToTensor(),  # OpenCV handles resizing, normalize here
+        transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
     dataset = ImageDataset(source_dir, transform=transform)
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    selected_images = noris_sum_resnet_torch(
+    selected_images = noris_sum_batched(
         unlabeled_loader=dataloader,
         feature_extractor=feature_extractor,
-        batch_size=batch_size,
+        total_images=total_images,
         lambda_param=lambda_param
     )
 

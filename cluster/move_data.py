@@ -113,8 +113,8 @@ if __name__=="__main__":
     except Exception as ex:
         print(ex)
 
-    infer_model_name = "yolov11_ver1"
-    base_path = "SW_20241226_RGB"
+    infer_model_name = "yolov11_ver1_12882"
+    base_path = "E:/jan_13_data/DW/RGB_selected"
     img_path = f"{base_path}"
     bin_path = None
     img_list = os.listdir(img_path)
