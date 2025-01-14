@@ -72,10 +72,10 @@ if __name__=="__main__":
         print(ex)
 
     ## inference model name
-    infer_model_name = "yolov11_ver1"
-    base_path = f"D:/Nilesh/labeling_work_24_12_23/yolodata/SW/20241226/version_1/f"
-    labeled_no_array = [0, 1, 3, 4]
-    label_ver = 0
+    infer_model_name = "yolov11_ver1_12882"
+    base_path = f"E:/jan_13_data/HI/20250113/RGB_selected_label"
+    labeled_no_array = [0, 1, 2, 3, 4, 5]
+    label_ver = 1
 
 
     for labeled_no in labeled_no_array: 

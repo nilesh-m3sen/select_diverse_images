@@ -114,13 +114,12 @@ if __name__=="__main__":
         print(ex)
 
     infer_model_name = "yolov11_ver1_12882"
-    base_path = "E:/jan_13_data/DW/RGB_selected"
+    base_path = "E:/jan_13_data/DW/20250111/RGB_selected"
     img_path = f"{base_path}"
     bin_path = None
     img_list = os.listdir(img_path)
     save_dir = f"{base_path}_label"
-    ## make folder 
+
     make_save_path(save_dir)
-    ## copy data from origin
     move_data(infer_model_name,grpc_url,img_path,img_list,save_dir,bin_path,half=True)
 

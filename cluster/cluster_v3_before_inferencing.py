@@ -32,10 +32,11 @@ class ImageDataset(torch.utils.data.Dataset):
 
 def main():
 
-    image_dir = f"E:/jan_13_data/GW/20250112/RGB"
-    output_dir = f"E:/jan_13_data/GW/20250112/RGB_selected"
+    base_path = f"E:/jan_13_data/DW/20250111"
+    image_dir = f"{base_path}/RGB"
+    output_dir = f"{base_path}/RGB_selected"
     
-    n_clusters = 220
+    n_clusters = 2200
     max_per_cluster = 10  # Maximum similar images allowed per cluster
 
     

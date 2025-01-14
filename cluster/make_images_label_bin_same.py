@@ -3,13 +3,13 @@ import os
 import shutil
 
 
-labeled_no_array = [0, 1, 3, 4]
+labeled_no_array = [0, 1, 2, 3, 4, 5]
 
 for label_number in labeled_no_array:
-    base_path = f"D:/Nilesh/labeling_work_24_12_23/yolodata/SW/20241226/version_1/f/{label_number}"
+    base_path = f"E:/jan_13_data/HI/20250113/RGB_selected_label/{label_number}"
 
     text_dir = f'{base_path}/{label_number}_label' 
-    bin_dir = f'D:/Nilesh/labeling_work_24_12_23/yolodata/SW/20241226/F' 
+    bin_dir = f'E:/jan_13_data/HI/20250113/F' 
     target_dir = f'{base_path}/{label_number}_bin_used' 
 
     if not os.path.exists(target_dir):

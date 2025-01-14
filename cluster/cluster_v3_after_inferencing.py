@@ -32,25 +32,29 @@ class ImageDataset(torch.utils.data.Dataset):
 
 def main():
     label_array = [0, 1, 2, 3, 4, 5]
+    base_path = f"E:/jan_13_data/DW/20250111/RGB_selected_label"
     for label_no in label_array: 
         
         print(f" Running for {label_no}")
-        image_dir = f"E:/jan_13_data/DW/RGB_selected_label/{label_no}/{label_no}_predict"
-        output_dir = f"E:/jan_13_data/DW/RGB_selected_label/{label_no}/{label_no}_image"
+        image_dir = f"{base_path}/{label_no}/{label_no}_predict"
+        output_dir = f"{base_path}/{label_no}/{label_no}_image"
         
         if label_no == 0 or label_no == 3:
-            n_clusters = 500
+            n_clusters = 60
             max_per_cluster = 10  # Maximum similar images allowed per cluster
         
         elif label_no == 1 or label_no == 4:
-            n_clusters = 300
+            n_clusters = 40
             max_per_cluster = 10  # Maximum similar images allowed per cluster
         
         elif label_no == 2 or label_no == 5:
-            n_clusters = 100
+            n_clusters = 22
             max_per_cluster = 10  # Maximum similar images allowed per cluster
             
         start_time = time.time()
+        
+        print('n_clusters', n_clusters)
+        print('max_per_cluster', max_per_cluster)
         
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
